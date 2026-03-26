@@ -4,6 +4,8 @@ This project builds a simple analytics pipeline for **MavenFlix**, a fictitious 
 
 The dataset contains ~2,900 subscriber subscription records from **September 2022 through September 2023**. Each record represents a customer subscription including subscription cost, created/canceled dates, billing interval, and payment status.
 
+![MavenFlix Pipeline](docs/images/pasted-image.png)
+
 ## Architecture Overview
 
 This repo is organized as a small end-to-end pipeline:
