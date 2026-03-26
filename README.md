@@ -1,94 +1,115 @@
-# Streaming Video Subscriptions (MavenFlix)
+# Streaming Video Subscriptions (MavenFlix) — Data Lake → Warehouse → Data Marts
 
-Subscription records for **MavenFlix**, a fictitious video streaming platform.
+This project builds a simple analytics pipeline for **MavenFlix**, a fictitious video streaming platform.
 
-This dataset contains information for ~2,900 subscribers covering **September 2022 through September 2023**. Each row represents an individual customer subscription, including subscription cost, created/canceled dates, billing interval, and payment status.
+The dataset contains ~2,900 subscriber subscription records from **September 2022 through September 2023**. Each record represents a customer subscription including subscription cost, created/canceled dates, billing interval, and payment status.
 
-## Dataset Contents
+## Architecture Overview
 
-- **subscription records** (one row per customer subscription)
-- Time period:
-  - **2022-09** to **2023-09** (inclusive)
+This repo is organized as a small end-to-end pipeline:
 
-Typical fields include (names may vary depending on the CSV you downloaded):
-- `customer_id` / `subscriber_id`
-- `created_date` (subscription start date)
-- `canceled_date` (subscription cancellation date; often null for active subs)
-- `subscription_cost`
-- `interval` (e.g., monthly, annual)
-- `payment_status` (e.g., paid, past_due, failed)
-- `is_active` (derived or provided)
+- **Data Lake (Raw Zone)**: raw CSV files (source-of-truth extracts)
+- **Staging (Clean Zone)**: cleaned CSV output ready to load
+- **Data Warehouse**: PostgreSQL database containing a staging table for the cleaned data
+- **Data Marts**: curated **dimension** and **fact** tables for reporting and analysis
+
+## Data Flow Summary
+
+Raw CSV → `ingest.py` → cleans data → writes a staging CSV  
+Staging CSV → `load.py` → loads into a warehouse staging table  
+Warehouse staging → `load_datamart.py` → builds dimension + fact tables (data marts)
+
+## Scripts
+
+### 1) `ingest.py`
+**Purpose**: Pull raw data, clean it, and prepare it for loading into the warehouse.
+
+**Key steps**
+- Reads raw CSV: `Subscription Cohort Analysis Data.csv`
+- Converts date columns to datetime
+- Creates new features:
+  - `is_active`: whether subscription is still ongoing
+  - `subscription_length_days`: duration of subscription
+- Saves cleaned data to:
+  - `data/staging/cleaned_subscriptions.csv`
+
+**Output**
+- Cleaned staging CSV, ready for warehouse ingestion
+
+---
+
+### 2) `load.py`
+**Purpose**: Load the cleaned staging CSV into the PostgreSQL warehouse.
+
+**Key steps**
+- Reads `data/staging/cleaned_subscriptions.csv`
+- Optionally converts Yes/No columns to 1/0
+- Connects to PostgreSQL (example DB: `mavenflix_dw`)
+- Loads data into the warehouse staging table:
+  - `subscriptions_staging`
+
+**Output**
+- Data available in the warehouse staging table (`subscriptions_staging`)
+
+---
+
+### 3) `check_columns.py`
+**Purpose**: Quickly inspect the CSV before loading or transformations.
+
+**Key steps**
+- Reads the CSV
+- Prints all column names
+- Prints the first 5 rows for sanity checks
+
+**Output**
+- Helps verify data structure (useful for debugging missing columns / schema mismatch)
+
+---
+
+### 4) `load_datamart.py`
+**Purpose**: Build your data marts from the staging table.
+
+**Key steps**
+- Reads `subscriptions_staging` from PostgreSQL
+- Creates dimension tables:
+  - `dim_customer`: unique customers
+  - `dim_subscription`: subscription attributes
+- Creates fact table:
+  - `fact_subscription`: subscription activity with measures (e.g., length, payment status)
+- Writes marts back into PostgreSQL (same database)
+
+**Output**
+- Data marts in PostgreSQL:
+  - `dim_customer`
+  - `dim_subscription`
+  - `fact_subscription`
+
+## Known Issue: `load_datamart.py` column mismatch
+
+If you run `load_datamart.py` and see an error like:
+
+`KeyError: "['customer_name', 'customer_email'] not in index"`
+
+It happens because the staging CSV does **not** contain `customer_name` or `customer_email`. The dataset only includes `customer_id` (plus subscription fields).
+
+**Fix**
+- Update the datamart build logic to use the columns that actually exist in the staging table, or remove fields like `customer_name` / `customer_email` from the dimension design unless you have a separate customer source dataset.
 
 ## Recommended Analysis
 
-### 1) How have MavenFlix subscriptions trended over time?
-Suggested metrics:
-- New subscriptions per month (count of `created_date`)
-- Cancellations per month (count of `canceled_date`)
-- Active subscribers over time (created <= date AND (canceled is null OR canceled > date))
+### 1) Subscription trends over time
+- New subscriptions per month (from `created_date`)
+- Cancellations per month (from `canceled_date`)
+- Active subscribers over time (`is_active` + date logic)
 
-Common outputs:
-- Monthly line chart of new subs vs cancellations
-- Monthly active subscriber trend
+### 2) % of customers subscribed for 5+ months
+- Use `subscription_length_days` (or compute duration using `created_date` and `canceled_date`)
+- Convert to months and compute percentage >= 5 months
 
-### 2) What percentage of customers have subscribed for 5 months or more?
-Approach:
-- Compute `subscription_length_days = (canceled_date or period_end) - created_date`
-- Convert to months (e.g., `days / 30.44`) or count month boundaries
-- Calculate:
-  - `pct_5_months_plus = customers_with_length >= 5 months / total_customers`
+### 3) Retention (best/worst months)
+- Cohort by `created_month`
+- Measure retention across subsequent months
+- Identify highest and lowest cohort retention
 
-Notes:
-- For active subscriptions (no `canceled_date`), use the dataset end date (e.g., `2023-09-30`) as the end of the observation window.
-
-### 3) What month has the highest subscriber retention, the lowest retention?
-Recommended method (cohort retention):
-- Define a cohort as the month of `created_date` (e.g., `2022-09`)
-- For each cohort, compute how many subscribers are still active in month 1, 2, 3, ...
-- Retention for a cohort-month = retained users / cohort size
-- Identify:
-  - Highest retention cohort (e.g., best month-1 or month-5 retention)
-  - Lowest retention cohort
-
-## Assumptions / Data Quality Notes
-
-- `canceled_date` may be missing for active subscribers.
-- Payment status may impact “active” definition. Decide whether:
-  - “active” means not canceled, OR
-  - “active & paying” means not canceled AND payment status is good.
-- Some customers may appear more than once if they churn and resubscribe (depends on source). If so, decide whether to:
-  - treat each row as a separate subscription, OR
-  - aggregate to one record per customer.
-
-## Getting Started
-
-### Option A: Analyze in Python (pandas)
-1. Create a virtual environment
-2. Install dependencies:
-   - `pandas`
-   - `numpy`
-   - (optional) `matplotlib` / `seaborn` for charts
-
-3. Load the CSV and parse dates:
-- Parse `created_date` and `canceled_date`
-- Fill `is_active` where `canceled_date` is null (if needed)
-
-### Option B: Analyze in SQL
-1. Load the CSV into your database (Postgres, BigQuery, etc.)
-2. Create derived columns:
-- `created_month`
-- `canceled_month`
-- `subscription_duration`
-
-## Example KPIs to Report
-
-- Total subscribers
-- New subscribers per month
-- Cancellations per month
-- Active subscribers at month-end
-- Churn rate (monthly) = cancellations / starting active subscribers
-- Retention by cohort (month 1, month 2, month 3, ...)
-
-## License / Disclaimer
-
-This dataset represents a **fictitious** product (MavenFlix). Use for analytics practice, portfolio projects, and learning.
+## Disclaimer
+MavenFlix is fictitious and the dataset is intended for analytics practice.
